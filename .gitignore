@@ -1,0 +1,28 @@
+# Node
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/.env.local
+frontend/.env.*.local
+
+# Build
+dist/
+build/
+
+# Sui Move build artifacts
+move/wanderlot/build/
+move/wanderlot/.move/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
