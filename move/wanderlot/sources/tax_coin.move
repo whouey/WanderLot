@@ -7,27 +7,27 @@
 ///     transferring it, so pool.move can receive it internally.
 module wanderlot::tax_coin;
 
-use sui::coin_registry;
 use sui::coin::{Self, Coin, TreasuryCap};
+use sui::url;
 use wanderlot::treasury::{Self, Treasury};
 use wanderlot::usdc::USDC;
 
 public struct TAX_COIN has drop {}
 
 fun init(witness: TAX_COIN, ctx: &mut TxContext) {
-    let (builder, treasury_cap) = coin_registry::new_currency_with_otw(
+    let (treasury_cap, metadata) = coin::create_currency<TAX_COIN>(
         witness,
         6,
-        b"TAX".to_string(),
-        b"TAX_COIN".to_string(),
-        b"WanderLot lottery ticket currency".to_string(),
-        b"https://cdn-icons-png.flaticon.com/512/8744/8744976.png".to_string(),
+        b"TAX",
+        b"TAX_COIN",
+        b"WanderLot lottery ticket currency",
+        option::some(url::new_unsafe_from_bytes(
+            b"https://cdn-icons-png.flaticon.com/512/8744/8744976.png"
+        )),
         ctx,
     );
-    let metadata_cap = builder.finalize(ctx);
-    transfer::public_transfer(metadata_cap, ctx.sender());
+    transfer::public_freeze_object(metadata);
     // TreasuryCap stays private with deployer (not shared)
-    // so only authorised callers can mint TAX_COIN
     transfer::public_transfer(treasury_cap, ctx.sender());
 }
 
@@ -36,6 +36,7 @@ fun init(witness: TAX_COIN, ctx: &mut TxContext) {
 /// Exchange USDC for TAX_COIN at a 1:10 ratio.
 /// USDC is deposited into the Treasury prize pool.
 /// TAX_COIN is transferred to ctx.sender().
+#[allow(lint(self_transfer))]
 public fun buy_quota(
     in_coin: Coin<USDC>,
     treasury_cap: &mut TreasuryCap<TAX_COIN>,

@@ -4,9 +4,12 @@
 /// the entire Treasury prize.
 ///
 /// Extensions over the reference:
-///   - create_invoice        : returns Invoice instead of transferring (pool use)
-///   - claim_lottery_to_pool : returns Coin<USDC> instead of transferring (pool use)
-///   - burn_invoice          : destroys a non-winning invoice (pool cleanup)
+///   - create_invoice        : returns Invoice instead of transferring (individual pool use)
+///   - register_invoice      : consumes TAX_COIN, returns (number, timestamp), NO object created
+///                             — used by pool so it never needs to hold Invoice objects
+///   - claim_lottery_to_pool : returns Coin<USDC> instead of transferring (object-holding flow)
+///   - claim_by_number       : claim by stored (number, timestamp) — used by pool
+///   - burn_invoice          : destroys a non-winning invoice
 ///   - Getter functions for private fields (frontend / pool queries)
 module wanderlot::invoice;
 
@@ -71,6 +74,7 @@ fun init(ctx: &mut TxContext) {
 
 /// Draw a random winner from all invoices ever created.
 /// Only the Admin capability holder can call this.
+#[allow(lint(public_random))]
 public fun lottery(
     _admin: &Admin,
     system: &mut System,
@@ -84,7 +88,7 @@ public fun lottery(
     system.counter = 0;
 }
 
-// ── Invoice creation ──────────────────────────────────────────────────────────
+// ── Invoice creation — individual user flow ───────────────────────────────────
 
 /// Standard path: create an invoice and transfer it to the caller.
 #[allow(lint(self_transfer))]
@@ -99,7 +103,7 @@ public fun init_invoice(
     transfer::public_transfer(invoice, ctx.sender());
 }
 
-/// Pool path: create an invoice and RETURN it so pool.move can store it.
+/// Returns the Invoice object (used if caller needs to hold it themselves).
 public fun create_invoice(
     tax: Coin<TAX_COIN>,
     system: &mut System,
@@ -117,60 +121,97 @@ fun create_invoice_internal(
     clock: &Clock,
     ctx: &mut TxContext,
 ): Invoice {
-    let amount = coin::value(&tax);
+    let amount    = coin::value(&tax);
     let timestamp = clock::timestamp_ms(clock);
-    system.count = system.count + 1;
-    let invoice_number = system.count;
+    system.count  = system.count + 1;
     balance::join(&mut system.balance, coin::into_balance(tax));
-    Invoice { id: object::new(ctx), protocol, amount, timestamp, invoice_number }
+    Invoice {
+        id: object::new(ctx),
+        protocol,
+        amount,
+        timestamp,
+        invoice_number: system.count,
+    }
 }
 
-// ── Lottery claim ─────────────────────────────────────────────────────────────
+// ── Invoice registration — pool flow (no Sui object created) ─────────────────
+
+/// Pool path: consume TAX_COIN, register a ticket number in the System,
+/// and return (invoice_number, timestamp) WITHOUT creating a Sui object.
+///
+/// This lets the pool record lottery tickets in a plain Table instead of
+/// storing Invoice objects as dynamic fields — avoiding Sui v1.42 restrictions
+/// on freshly-minted objects inside shared-object transactions.
+public(package) fun register_invoice(
+    tax: Coin<TAX_COIN>,
+    system: &mut System,
+    clock: &Clock,
+): (u64, u64) {
+    let timestamp = clock::timestamp_ms(clock);
+    system.count  = system.count + 1;
+    balance::join(&mut system.balance, coin::into_balance(tax));
+    (system.count, timestamp)
+}
+
+// ── Lottery claim — individual path ──────────────────────────────────────────
 
 /// Standard path: verify winner, drain Treasury, transfer prize to caller.
+#[allow(lint(self_transfer))]
 public fun claim_lottery(
     system: &mut System,
     invoice: Invoice,
     treasury: &mut Treasury,
-    clock: &Clock,
+    _clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    let prize = claim_lottery_internal(system, invoice, treasury, clock, ctx);
+    let prize = claim_with_invoice(system, invoice, treasury, ctx);
     transfer::public_transfer(prize, ctx.sender());
 }
 
-/// Pool path: verify winner, drain Treasury, RETURN prize so pool.move
-/// can add it to pool.reward_balance for proportional distribution.
+/// Returns the prize Coin instead of transferring (if caller wants to handle it).
 public fun claim_lottery_to_pool(
     system: &mut System,
     invoice: Invoice,
     treasury: &mut Treasury,
-    clock: &Clock,
+    _clock: &Clock,
     ctx: &mut TxContext,
 ): Coin<USDC> {
-    claim_lottery_internal(system, invoice, treasury, clock, ctx)
+    claim_with_invoice(system, invoice, treasury, ctx)
 }
 
-fun claim_lottery_internal(
-    system: &mut System,
+fun claim_with_invoice(
+    system: &System,
     invoice: Invoice,
     treasury: &mut Treasury,
-    clock: &Clock,
     ctx: &mut TxContext,
 ): Coin<USDC> {
-    // Invoice must have been created before the lottery ran
     assert!(invoice.timestamp <= system.timestamp, EExpired);
-    // Invoice number must match the drawn winner
     assert!(invoice.invoice_number == system.winner, EWrongWinner);
     let prize = treasury::output(treasury, ctx);
     burn_invoice_internal(invoice);
     prize
 }
 
+// ── Lottery claim — pool path (no Invoice object needed) ─────────────────────
+
+/// Pool path: claim prize using a stored (invoice_number, invoice_timestamp).
+/// Verifies the same conditions as claim_lottery without requiring the object.
+/// Only callable within this package so the pool contract is the sole caller.
+public(package) fun claim_by_number(
+    system: &System,
+    invoice_number: u64,
+    invoice_timestamp: u64,
+    treasury: &mut Treasury,
+    ctx: &mut TxContext,
+): Coin<USDC> {
+    assert!(invoice_timestamp <= system.timestamp, EExpired);
+    assert!(invoice_number == system.winner, EWrongWinner);
+    treasury::output(treasury, ctx)
+}
+
 // ── Invoice cleanup ───────────────────────────────────────────────────────────
 
-/// Destroy a non-winning invoice. Used by pool.move to clean up after each round
-/// so stale tickets can never be claimed in a future lottery.
+/// Destroy an Invoice object (e.g. after round ends without winning).
 public fun burn_invoice(invoice: Invoice) {
     burn_invoice_internal(invoice);
 }
@@ -182,9 +223,9 @@ fun burn_invoice_internal(invoice: Invoice) {
 
 // ── Getters ───────────────────────────────────────────────────────────────────
 
-public fun invoice_number(invoice: &Invoice): u64  { invoice.invoice_number }
+public fun invoice_number(invoice: &Invoice): u64   { invoice.invoice_number }
 public fun invoice_timestamp(invoice: &Invoice): u64 { invoice.timestamp }
-public fun invoice_amount(invoice: &Invoice): u64  { invoice.amount }
+public fun invoice_amount(invoice: &Invoice): u64   { invoice.amount }
 public fun invoice_protocol(invoice: &Invoice): String { invoice.protocol }
 
 public fun system_winner(system: &System): u64    { system.winner }

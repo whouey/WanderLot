@@ -2,23 +2,24 @@
 /// TreasuryCap is shared so anyone can call faucet().
 module wanderlot::usdc;
 
-use sui::coin_registry;
 use sui::coin::{Self, TreasuryCap};
+use sui::url;
 
 public struct USDC has drop {}
 
 fun init(witness: USDC, ctx: &mut TxContext) {
-    let (builder, treasury_cap) = coin_registry::new_currency_with_otw(
+    let (treasury_cap, metadata) = coin::create_currency<USDC>(
         witness,
         6,
-        b"usdc".to_string(),
-        b"USDC".to_string(),
-        b"Fake USDC for WanderLot testing".to_string(),
-        b"https://upload.wikimedia.org/wikipedia/commons/thumb/4/4a/Circle_USDC_Logo.svg/960px-Circle_USDC_Logo.svg.png".to_string(),
+        b"USDC",
+        b"USDC",
+        b"Fake USDC for WanderLot testing",
+        option::some(url::new_unsafe_from_bytes(
+            b"https://upload.wikimedia.org/wikipedia/commons/thumb/4/4a/Circle_USDC_Logo.svg/960px-Circle_USDC_Logo.svg.png"
+        )),
         ctx,
     );
-    let metadata_cap = builder.finalize(ctx);
-    transfer::public_transfer(metadata_cap, ctx.sender());
+    transfer::public_freeze_object(metadata);
     // Share treasury cap so anyone can mint test USDC
     transfer::public_share_object(treasury_cap);
 }
