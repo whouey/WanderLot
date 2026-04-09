@@ -46,19 +46,16 @@ export function buildFaucetTx(amount: number, recipient: string): Transaction {
  * Deposit USDC into the pool and receive a PoolTicket.
  * @param usdcCoinId object ID of a Coin<USDC> owned by the caller
  * @param amount raw USDC units to deposit (split from usdcCoinId if needed)
+ * @param sender wallet address of the depositor (to receive the PoolTicket)
  */
-export function buildDepositTx(usdcCoinId: string, amount: bigint): Transaction {
+export function buildDepositTx(usdcCoinId: string, amount: bigint, sender: string): Transaction {
   const tx = new Transaction();
   const [splitCoin] = tx.splitCoins(tx.object(usdcCoinId), [tx.pure.u64(amount)]);
   const ticket = tx.moveCall({
     target: `${PACKAGE_ID}::${MODULES.pool}::deposit`,
     arguments: [tx.object(POOL_ID), splitCoin],
   });
-  // Transfer the returned PoolTicket to the caller
-  tx.transferObjects([ticket], tx.moveCall({
-    target: "0x2::tx_context::sender",
-    arguments: [],
-  }));
+  tx.transferObjects([ticket], tx.pure.address(sender));
   return tx;
 }
 
